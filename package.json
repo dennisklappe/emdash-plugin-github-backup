@@ -1,0 +1,35 @@
+{
+  "name": "emdash-plugin-github-backup",
+  "version": "0.1.0",
+  "description": "Backs up emdash CMS content to a GitHub repository folder on every edit, giving file-based backups and a full git change history.",
+  "type": "module",
+  "main": "src/index.ts",
+  "exports": {
+    ".": "./src/index.ts"
+  },
+  "files": [
+    "src"
+  ],
+  "keywords": [
+    "emdash",
+    "cms",
+    "plugin",
+    "backup",
+    "github",
+    "git",
+    "versioning"
+  ],
+  "author": "Dennis Klappe <dennisklappe@gmail.com>",
+  "license": "MIT",
+  "homepage": "https://github.com/dennisklappe/emdash-plugin-github-backup#readme",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/dennisklappe/emdash-plugin-github-backup.git"
+  },
+  "bugs": {
+    "url": "https://github.com/dennisklappe/emdash-plugin-github-backup/issues"
+  },
+  "peerDependencies": {
+    "emdash": ">=0.9.0"
+  }
+}
