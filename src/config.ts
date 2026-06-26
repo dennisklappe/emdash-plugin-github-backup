@@ -21,6 +21,18 @@ export interface GithubBackupOptions {
 	branch?: string;
 	/** Folder (path prefix) inside the repo to write backups to. Defaults to "emdash-backup". */
 	folder?: string;
+	/**
+	 * Display name used as the commit committer (and as the author when the
+	 * editing CMS user cannot be resolved). Defaults to "EmDash CMS". Set this
+	 * to avoid commits being attributed to the token owner's GitHub account.
+	 */
+	committerName?: string;
+	/**
+	 * Email used for the commit committer. Defaults to a GitHub no-reply
+	 * address, which keeps the committer as plain text without linking to any
+	 * GitHub account.
+	 */
+	committerEmail?: string;
 }
 
 export interface ResolvedConfig {
@@ -29,6 +41,8 @@ export interface ResolvedConfig {
 	repo: string;
 	branch: string;
 	folder: string;
+	committerName: string;
+	committerEmail: string;
 }
 
 /** Minimal subset of the plugin KV API this module relies on. */
@@ -38,6 +52,11 @@ interface KvLike {
 
 const DEFAULT_BRANCH = "main";
 const DEFAULT_FOLDER = "emdash-backup";
+// Neutral committer identity. The no-reply email intentionally does not map to
+// any GitHub account, so commits show this name as plain text instead of
+// linking to the token owner's (confusing "github backup") account.
+const DEFAULT_COMMITTER_NAME = "EmDash CMS";
+const DEFAULT_COMMITTER_EMAIL = "emdash-cms@users.noreply.github.com";
 
 function firstNonEmpty(...values: Array<string | null | undefined>): string {
 	for (const value of values) {
@@ -90,13 +109,16 @@ export async function resolveConfig(
 		}
 	};
 
-	const [kvToken, kvOwner, kvRepo, kvBranch, kvFolder] = await Promise.all([
-		kvGet("settings:token"),
-		kvGet("settings:owner"),
-		kvGet("settings:repo"),
-		kvGet("settings:branch"),
-		kvGet("settings:folder"),
-	]);
+	const [kvToken, kvOwner, kvRepo, kvBranch, kvFolder, kvCommitterName, kvCommitterEmail] =
+		await Promise.all([
+			kvGet("settings:token"),
+			kvGet("settings:owner"),
+			kvGet("settings:repo"),
+			kvGet("settings:branch"),
+			kvGet("settings:folder"),
+			kvGet("settings:committerName"),
+			kvGet("settings:committerEmail"),
+		]);
 
 	// Env var GITHUB_BACKUP_REPO is "owner/repo".
 	const envRepoPair = splitRepo(readEnv("GITHUB_BACKUP_REPO"));
@@ -106,10 +128,22 @@ export async function resolveConfig(
 	const repo = firstNonEmpty(opt.repo, kvRepo, envRepoPair.repo);
 	const branch = firstNonEmpty(opt.branch, kvBranch, readEnv("GITHUB_BACKUP_BRANCH"), DEFAULT_BRANCH);
 	const folder = firstNonEmpty(opt.folder, kvFolder, readEnv("GITHUB_BACKUP_FOLDER"), DEFAULT_FOLDER);
+	const committerName = firstNonEmpty(
+		opt.committerName,
+		kvCommitterName,
+		readEnv("GITHUB_BACKUP_COMMITTER_NAME"),
+		DEFAULT_COMMITTER_NAME,
+	);
+	const committerEmail = firstNonEmpty(
+		opt.committerEmail,
+		kvCommitterEmail,
+		readEnv("GITHUB_BACKUP_COMMITTER_EMAIL"),
+		DEFAULT_COMMITTER_EMAIL,
+	);
 
 	if (!token || !owner || !repo) {
 		return null;
 	}
 
-	return { token, owner, repo, branch, folder };
+	return { token, owner, repo, branch, folder, committerName, committerEmail };
 }

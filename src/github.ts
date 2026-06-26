@@ -22,13 +22,24 @@ const API_VERSION = "2022-11-28";
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
+/**
+ * A git identity (commit author or committer). GitHub links a commit to a
+ * GitHub account by matching this `email` to a registered account; a neutral
+ * no-reply email therefore shows the `name` as plain text without linking to
+ * any phantom account.
+ */
+export interface GitIdentity {
+	name: string;
+	email: string;
+}
+
 export interface GithubClient {
 	/** Write (create or overwrite) a UTF-8 text file at `path`. */
-	putTextFile(path: string, content: string, message: string): Promise<void>;
+	putTextFile(path: string, content: string, message: string, identity?: GitIdentity): Promise<void>;
 	/** Write (create or overwrite) a binary file at `path` from base64 content. */
-	putBase64File(path: string, base64: string, message: string): Promise<void>;
+	putBase64File(path: string, base64: string, message: string, identity?: GitIdentity): Promise<void>;
 	/** Delete a file at `path`. No-op when the file does not exist. */
-	deleteFile(path: string, message: string): Promise<void>;
+	deleteFile(path: string, message: string, identity?: GitIdentity): Promise<void>;
 	/** Return true when a file already exists at `path`. */
 	fileExists(path: string): Promise<boolean>;
 }
@@ -78,7 +89,13 @@ function encodePath(path: string): string {
 }
 
 export function createGithubClient(config: ResolvedConfig, fetchFn: FetchLike): GithubClient {
-	const { owner, repo, branch, token } = config;
+	const { owner, repo, branch, token, committerName, committerEmail } = config;
+
+	// Always commit under an explicit, neutral committer. Without this the
+	// GitHub Contents API attributes every commit to the *token owner* account,
+	// which renders as a confusing phantom "github backup" identity. A neutral
+	// no-reply email keeps the committer as plain text (no account link).
+	const committer: GitIdentity = { name: committerName, email: committerEmail };
 
 	const contentsUrl = (path: string): string =>
 		`${API_BASE}/repos/${owner}/${repo}/contents/${encodePath(path)}`;
@@ -101,14 +118,25 @@ export function createGithubClient(config: ResolvedConfig, fetchFn: FetchLike): 
 		return body.sha ?? null;
 	};
 
-	const put = async (path: string, base64: string, message: string): Promise<void> => {
+	const put = async (
+		path: string,
+		base64: string,
+		message: string,
+		identity?: GitIdentity,
+	): Promise<void> => {
 		// Read the current sha so an existing file is updated rather than
 		// rejected. When the file is new, sha stays null and GitHub creates it.
 		const sha = await getSha(path);
+		// Both committer AND author are the logged-in CMS editor (name + email)
+		// when we could resolve them; otherwise fall back to the neutral
+		// identity so we never re-introduce the token-owner phantom account.
+		const who = identity ?? committer;
 		const payload: Record<string, unknown> = {
 			message,
 			content: base64,
 			branch,
+			committer: who,
+			author: who,
 		};
 		if (sha) {
 			payload.sha = sha;
@@ -125,7 +153,13 @@ export function createGithubClient(config: ResolvedConfig, fetchFn: FetchLike): 
 		// sha before giving up.
 		if (res.status === 409 || res.status === 422) {
 			const freshSha = await getSha(path);
-			const retryPayload: Record<string, unknown> = { message, content: base64, branch };
+			const retryPayload: Record<string, unknown> = {
+				message,
+				content: base64,
+				branch,
+				committer: who,
+				author: who,
+			};
 			if (freshSha) {
 				retryPayload.sha = freshSha;
 			}
@@ -146,22 +180,23 @@ export function createGithubClient(config: ResolvedConfig, fetchFn: FetchLike): 
 	};
 
 	return {
-		async putTextFile(path, content, message) {
-			await put(path, toBase64(content), message);
+		async putTextFile(path, content, message, identity) {
+			await put(path, toBase64(content), message, identity);
 		},
-		async putBase64File(path, base64, message) {
-			await put(path, base64, message);
+		async putBase64File(path, base64, message, identity) {
+			await put(path, base64, message, identity);
 		},
-		async deleteFile(path, message) {
+		async deleteFile(path, message, identity) {
 			const sha = await getSha(path);
 			if (!sha) {
 				// Nothing to delete.
 				return;
 			}
+			const who = identity ?? committer;
 			const res = await fetchFn(contentsUrl(path), {
 				method: "DELETE",
 				headers: { ...authHeaders(token), "Content-Type": "application/json" },
-				body: JSON.stringify({ message, sha, branch }),
+				body: JSON.stringify({ message, sha, branch, committer: who, author: who }),
 			});
 			if (!res.ok) {
 				throw new Error(`GitHub DELETE ${path} failed: ${res.status} ${await safeText(res)}`);

@@ -21,7 +21,7 @@ import { createGithubClient } from "./github.js";
 import { backupEntry, deleteEntry } from "./backup.js";
 
 const PLUGIN_ID = "github-backup";
-const PLUGIN_VERSION = "0.1.0";
+const PLUGIN_VERSION = "0.1.1";
 const ENTRYPOINT = "emdash-plugin-github-backup";
 
 export type { GithubBackupOptions } from "./config.js";
@@ -38,8 +38,10 @@ export function createPlugin(options?: GithubBackupOptions) {
 		version: PLUGIN_VERSION,
 		// network:request -> ctx.http.fetch, restricted to the hosts below.
 		// content:read / media:read let the backup read the saved item and any
-		// referenced media (media is best-effort, see backup.ts).
-		capabilities: ["network:request", "content:read", "media:read"],
+		// referenced media (media is best-effort, see backup.ts). users:read
+		// lets us resolve an entry author id to a name/email for the commit
+		// "edited by" clause and author (best-effort, see backup.ts).
+		capabilities: ["network:request", "content:read", "media:read", "users:read"],
 		allowedHosts: ["api.github.com"],
 		admin: {
 			settingsSchema: {
@@ -71,6 +73,20 @@ export function createPlugin(options?: GithubBackupOptions) {
 					description: "Folder inside the repository to write backups to.",
 					default: "emdash-backup",
 				},
+				committerName: {
+					type: "string",
+					label: "Committer name",
+					description:
+						"Name shown as the commit committer (and as the author when the editing user cannot be resolved). Prevents commits being attributed to the token owner's GitHub account.",
+					default: "EmDash CMS",
+				},
+				committerEmail: {
+					type: "string",
+					label: "Committer email",
+					description:
+						"Email for the commit committer. A no-reply address keeps it as plain text without linking to any GitHub account.",
+					default: "emdash-cms@users.noreply.github.com",
+				},
 			},
 		},
 		hooks: {
@@ -100,6 +116,7 @@ export function createPlugin(options?: GithubBackupOptions) {
 						isNew: event.isNew,
 						media: ctx.media,
 						http: ctx.http,
+						users: ctx.users,
 					});
 				} catch (err) {
 					// A backup failure must never break the content save.

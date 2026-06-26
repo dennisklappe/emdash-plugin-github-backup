@@ -3,7 +3,10 @@
  */
 
 import type { ResolvedConfig } from "./config.js";
-import { bytesToBase64, type GithubClient } from "./github.js";
+import { bytesToBase64, type GitIdentity, type GithubClient } from "./github.js";
+
+/** This plugin's repo, linked from every backup commit message. */
+const PLUGIN_URL = "https://github.com/dennisklappe/emdash-plugin-github-backup";
 
 /** Subset of the emdash logger we use. */
 interface LogLike {
@@ -15,6 +18,120 @@ interface LogLike {
 /** Subset of the media access API we use (read-only). */
 interface MediaLike {
 	get(id: string): Promise<{ id: string; filename: string; mimeType: string; url: string } | null>;
+}
+
+/** Subset of the emdash user access API we use (read-only, `users:read`). */
+interface UsersLike {
+	get(id: string): Promise<{ id: string; email: string; name: string | null } | null>;
+}
+
+/**
+ * Who an entry is attributed to, for the commit. emdash's content hooks do not
+ * carry the logged-in editor (the `content:afterSave` event is only
+ * `{ content, collection, isNew }`), so this is the best available signal: the
+ * entry's assigned author/byline taken from the saved record. `name` always
+ * has a human-readable label; `email` is set only when we could resolve a real
+ * account, in which case it is used as the git commit author.
+ */
+interface Editor {
+	name: string;
+	email?: string;
+}
+
+/** Narrow an unknown value to a non-empty trimmed string, else undefined. */
+function pickNonEmpty(value: unknown): string | undefined {
+	return typeof value === "string" && value.trim().length > 0 ? value.trim() : undefined;
+}
+
+/**
+ * Best-effort: figure out who to attribute the commit to from the saved record.
+ *
+ * Preference order:
+ *   1. The hydrated byline display name (`content.byline.displayName`), and its
+ *      linked user (`byline.userId`) resolved to an email via `ctx.users`.
+ *   2. The first credited byline in `content.bylines`.
+ *   3. The raw `content.authorId`, resolved to a name + email via `ctx.users`.
+ *
+ * Returns `null` when nothing usable is present, so callers can omit the
+ * "edited by" clause and let the commit fall back to the neutral committer.
+ *
+ * NOTE: this is the *assigned author/byline*, which is not necessarily the
+ * person who clicked save. Exposing the true acting user would require a fork
+ * change (see README "Who made the edit").
+ */
+async function resolveEditor(
+	content: Record<string, unknown>,
+	users?: UsersLike,
+): Promise<Editor | null> {
+	const byline = content.byline as { displayName?: unknown; userId?: unknown } | null | undefined;
+	if (byline) {
+		const name = pickNonEmpty(byline.displayName);
+		if (name) {
+			const userId = pickNonEmpty(byline.userId);
+			const email = userId ? await resolveUserEmail(userId, users) : undefined;
+			return { name, email };
+		}
+	}
+
+	const bylines = content.bylines as Array<{ byline?: { displayName?: unknown } }> | undefined;
+	if (Array.isArray(bylines)) {
+		for (const credit of bylines) {
+			const name = pickNonEmpty(credit?.byline?.displayName);
+			if (name) return { name };
+		}
+	}
+
+	const authorId = pickNonEmpty(content.authorId);
+	if (authorId && users) {
+		try {
+			const user = await users.get(authorId);
+			const name = pickNonEmpty(user?.name) ?? pickNonEmpty(user?.email);
+			if (name) {
+				return { name, email: pickNonEmpty(user?.email) };
+			}
+		} catch {
+			// users access is best-effort; ignore and fall through.
+		}
+	}
+
+	return null;
+}
+
+/** Resolve a user id to an email via `ctx.users`, tolerating any failure. */
+async function resolveUserEmail(userId: string, users?: UsersLike): Promise<string | undefined> {
+	if (!users) return undefined;
+	try {
+		const user = await users.get(userId);
+		return pickNonEmpty(user?.email);
+	} catch {
+		return undefined;
+	}
+}
+
+/**
+ * Build the commit message: the change, an "edited by {name} <{email}>" clause
+ * when we know who the entry is attributed to, and a link back to this plugin.
+ * A middle dot (` · `) is the separator, per the project's copy conventions.
+ */
+function commitMessage(verb: string, collection: string, slug: string, editor: Editor | null): string {
+	const parts = [`${verb} ${collection}/${slug}`];
+	if (editor) {
+		parts.push(editor.email ? `edited by ${editor.name} <${editor.email}>` : `edited by ${editor.name}`);
+	}
+	parts.push(`via ${PLUGIN_URL}`);
+	return parts.join(" · ");
+}
+
+/**
+ * The git identity (commit author + committer) for an edit: the logged-in CMS
+ * editor's name AND email when resolvable, otherwise the neutral configured
+ * committer (so the commit never falls back to the token-owner account).
+ */
+function commitIdentity(editor: Editor | null, config: ResolvedConfig): GitIdentity {
+	return {
+		name: editor?.name ?? config.committerName,
+		email: editor?.email ?? config.committerEmail,
+	};
 }
 
 /** Subset of the HTTP access API we use. */
@@ -84,8 +201,9 @@ export async function backupEntry(args: {
 	isNew: boolean;
 	media?: MediaLike;
 	http?: HttpLike;
+	users?: UsersLike;
 }): Promise<void> {
-	const { client, config, log, collection, content, isNew, media, http } = args;
+	const { client, config, log, collection, content, isNew, media, http, users } = args;
 
 	const id = pickString(content.id) ?? null;
 	const slug = deriveSlug(content, id);
@@ -99,10 +217,11 @@ export async function backupEntry(args: {
 		content,
 	};
 
+	const editor = await resolveEditor(content, users);
 	const verb = isNew ? "Create" : "Update";
-	const message = `${verb} ${collection}/${slug} (emdash backup)`;
+	const message = commitMessage(verb, collection, slug, editor);
 
-	await client.putTextFile(path, toJson(snapshot), message);
+	await client.putTextFile(path, toJson(snapshot), message, commitIdentity(editor, config));
 	log.info("github-backup: wrote entry snapshot", { path });
 
 	// Best-effort media backup. Only runs when both media read access and the
@@ -139,7 +258,7 @@ export async function deleteEntry(args: {
 	const safeId = safeSegment(id);
 	const byIdPath = entryPath(config, collection, safeId);
 
-	const message = `Delete ${collection}/${safeId} (emdash backup)`;
+	const message = `Delete ${collection}/${safeId} · via ${PLUGIN_URL}`;
 
 	if (await client.fileExists(byIdPath)) {
 		await client.deleteFile(byIdPath, message);
@@ -198,7 +317,7 @@ async function backupReferencedMedia(args: {
 			const bytes = new Uint8Array(await res.arrayBuffer());
 			const filename = safeSegment(item.filename || mediaId);
 			const path = `${config.folder}/media/${filename}`;
-			await client.putBase64File(path, bytesToBase64(bytes), `Backup media ${filename} (emdash backup)`);
+			await client.putBase64File(path, bytesToBase64(bytes), `Backup media ${filename} · via ${PLUGIN_URL}`);
 			log.info("github-backup: wrote media file", { path });
 		} catch (err) {
 			// Most commonly: the media URL host is not in allowedHosts, so the

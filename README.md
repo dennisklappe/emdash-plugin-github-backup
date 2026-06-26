@@ -14,7 +14,9 @@ endorsed by the emdash project.
 
 - On create or update (`content:afterSave`): writes (or overwrites) a
   pretty-printed JSON file at `<folder>/<collection>/<slug>.json` on the
-  configured branch. The commit message records the collection and slug.
+  configured branch. The commit message records the collection and slug, and an
+  `· edited by <name>` clause when the entry's author can be resolved (see
+  "Who made the edit").
 - On delete (`content:afterDelete`): removes the file so the working tree
   mirrors live content. The full pre-delete content stays recoverable from git
   history. When the file cannot be located by id (the delete event carries only
@@ -27,6 +29,40 @@ endorsed by the emdash project.
   Limitations for when this is skipped.
 
 A backup failure never breaks the content save. Errors are caught and logged.
+
+## Commit identity (who shows up on the commit)
+
+By default the GitHub Contents API attributes every commit to the **owner of the
+token** used to write it. With a dedicated backup token that renders as a
+confusing phantom account on GitHub. To avoid that, every commit is made under an
+explicit, neutral committer:
+
+- **Committer**: `EmDash CMS <emdash-cms@users.noreply.github.com>` by default.
+  The no-reply email is intentional: it shows the name as plain text and does
+  not link to any GitHub account. Override it with the `committerName` /
+  `committerEmail` settings (or `GITHUB_BACKUP_COMMITTER_NAME` /
+  `GITHUB_BACKUP_COMMITTER_EMAIL`).
+- **Author**: the CMS user the entry is attributed to, when that user can be
+  resolved to a real email (see below). The commit then links to that person's
+  GitHub account, just like a normal commit. When no user can be resolved, the
+  author falls back to the neutral committer.
+
+## Who made the edit
+
+emdash's content hooks do **not** carry the logged-in editor. The
+`content:afterSave` event is only `{ content, collection, isNew }` and
+`content:afterDelete` is `{ id, collection, permanent }` — neither includes the
+acting user / session. So the plugin uses the best available signal: the saved
+record's **assigned author / byline** (`content.byline`, `content.bylines`,
+`content.authorId`), resolving an id to a name and email via `ctx.users` (the
+`users:read` capability). This is the entry's author, which is usually but not
+necessarily the same person who clicked save.
+
+To attribute commits to the *actual* acting user, the emdash core would need to
+include it in the hook event — e.g. add a `user` field to `ContentHookEvent` and
+pass the request's session user into `runAfterSaveHooks` in `emdash-runtime.ts`.
+Until then the plugin degrades gracefully: when no author can be resolved, the
+`edited by` clause is omitted and the commit uses the neutral committer.
 
 ## Install
 
@@ -58,13 +94,15 @@ independently, first non-empty value wins, in this order:
 2. Admin settings (the plugin exposes a settings schema; `token` is a secret).
 3. Environment variables.
 
-| Field  | Option   | Env var                  | Default         |
-| ------ | -------- | ------------------------ | --------------- |
-| token  | `token`  | `GITHUB_BACKUP_TOKEN`    | (required)      |
-| owner  | `owner`  | `GITHUB_BACKUP_REPO` (1) | (required)      |
-| repo   | `repo`   | `GITHUB_BACKUP_REPO` (1) | (required)      |
-| branch | `branch` | `GITHUB_BACKUP_BRANCH`   | `main`          |
-| folder | `folder` | `GITHUB_BACKUP_FOLDER`   | `emdash-backup` |
+| Field          | Option           | Env var                          | Default                                |
+| -------------- | ---------------- | -------------------------------- | -------------------------------------- |
+| token          | `token`          | `GITHUB_BACKUP_TOKEN`            | (required)                             |
+| owner          | `owner`          | `GITHUB_BACKUP_REPO` (1)         | (required)                             |
+| repo           | `repo`           | `GITHUB_BACKUP_REPO` (1)         | (required)                             |
+| branch         | `branch`         | `GITHUB_BACKUP_BRANCH`           | `main`                                 |
+| folder         | `folder`         | `GITHUB_BACKUP_FOLDER`           | `emdash-backup`                        |
+| committerName  | `committerName`  | `GITHUB_BACKUP_COMMITTER_NAME`   | `EmDash CMS`                           |
+| committerEmail | `committerEmail` | `GITHUB_BACKUP_COMMITTER_EMAIL`  | `emdash-cms@users.noreply.github.com`  |
 
 (1) `GITHUB_BACKUP_REPO` is a single `owner/repo` string, for example
 `dennisklappe/my-site-backup`. It is split into owner and repo.
@@ -87,7 +125,9 @@ For each entry the plugin calls the GitHub Contents API:
 - `GET /repos/{owner}/{repo}/contents/{path}?ref={branch}` to read the current
   file's blob `sha`. A 404 means the file is new.
 - `PUT /repos/{owner}/{repo}/contents/{path}` with `{ message, content
-  (base64), branch }`, plus `sha` when overwriting an existing file. Auth is
+  (base64), branch, committer, author }`, plus `sha` when overwriting an
+  existing file. `committer` and `author` are set explicitly (see "Commit
+  identity") so commits are never attributed to the token owner. Auth is
   `Authorization: Bearer <token>`, with `Accept: application/vnd.github+json`,
   an `X-GitHub-Api-Version` header and a `User-Agent`.
 - Deletes use `DELETE` with the file's `sha`.
