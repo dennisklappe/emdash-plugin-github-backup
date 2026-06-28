@@ -21,7 +21,7 @@ import { createGithubClient } from "./github.js";
 import { backupEntry, deleteEntry } from "./backup.js";
 
 const PLUGIN_ID = "github-backup";
-const PLUGIN_VERSION = "0.1.1";
+const PLUGIN_VERSION = "0.1.2";
 const ENTRYPOINT = "emdash-plugin-github-backup";
 
 export type { GithubBackupOptions } from "./config.js";
@@ -78,7 +78,7 @@ export function createPlugin(options?: GithubBackupOptions) {
 					label: "Committer name",
 					description:
 						"Name shown as the commit committer (and as the author when the editing user cannot be resolved). Prevents commits being attributed to the token owner's GitHub account.",
-					default: "EmDash CMS",
+					default: "EmDash CMS Backup",
 				},
 				committerEmail: {
 					type: "string",

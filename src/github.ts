@@ -34,6 +34,12 @@ export interface GitIdentity {
 }
 
 export interface GithubClient {
+	/**
+	 * Read the current UTF-8 text content of a file at `path` on the target
+	 * branch. Returns `null` when the file does not exist (or is too large for
+	 * the contents API to inline), so callers treat it as "no previous backup".
+	 */
+	getTextFile(path: string): Promise<string | null>;
 	/** Write (create or overwrite) a UTF-8 text file at `path`. */
 	putTextFile(path: string, content: string, message: string, identity?: GitIdentity): Promise<void>;
 	/** Write (create or overwrite) a binary file at `path` from base64 content. */
@@ -57,6 +63,23 @@ function authHeaders(token: string): Record<string, string> {
 export function toBase64(text: string): string {
 	const bytes = new TextEncoder().encode(text);
 	return bytesToBase64(bytes);
+}
+
+/** Decode a base64 string (as returned by the GitHub contents API) to UTF-8. */
+export function base64ToText(base64: string): string {
+	const clean = base64.replace(/\s+/g, "");
+	const maybeBuffer = (
+		globalThis as { Buffer?: { from(s: string, enc: string): { toString(enc: string): string } } }
+	).Buffer;
+	if (maybeBuffer) {
+		return maybeBuffer.from(clean, "base64").toString("utf-8");
+	}
+	const binary = (globalThis as { atob: (s: string) => string }).atob(clean);
+	const bytes = new Uint8Array(binary.length);
+	for (let i = 0; i < binary.length; i += 1) {
+		bytes[i] = binary.charCodeAt(i);
+	}
+	return new TextDecoder().decode(bytes);
 }
 
 /** Encode raw bytes to base64. */
@@ -180,6 +203,23 @@ export function createGithubClient(config: ResolvedConfig, fetchFn: FetchLike): 
 	};
 
 	return {
+		async getTextFile(path) {
+			const url = `${contentsUrl(path)}?ref=${encodeURIComponent(branch)}`;
+			const res = await fetchFn(url, { method: "GET", headers: authHeaders(token) });
+			if (res.status === 404) {
+				return null;
+			}
+			if (!res.ok) {
+				throw new Error(`GitHub GET ${path} failed: ${res.status} ${await safeText(res)}`);
+			}
+			const body = (await res.json()) as { content?: string; encoding?: string };
+			// Files over ~1MB come back without inlined content; treat as "no
+			// previous backup" so the caller falls back to writing a fresh commit.
+			if (typeof body.content !== "string" || body.content.length === 0) {
+				return null;
+			}
+			return body.encoding === "base64" ? base64ToText(body.content) : body.content;
+		},
 		async putTextFile(path, content, message, identity) {
 			await put(path, toBase64(content), message, identity);
 		},

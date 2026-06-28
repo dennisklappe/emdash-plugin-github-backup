@@ -14,9 +14,16 @@ endorsed by the emdash project.
 
 - On create or update (`content:afterSave`): writes (or overwrites) a
   pretty-printed JSON file at `<folder>/<collection>/<slug>.json` on the
-  configured branch. The commit message records the collection and slug, and an
-  `· edited by <name>` clause when the entry's author can be resolved (see
-  "Who made the edit").
+  configured branch. The commit **subject** is just `Update <collection>/<slug>`
+  (clean in GitHub's commit list); the **body** carries an `Edited by <name>
+  <email>` line when the entry's author can be resolved (see "Who made the
+  edit") and a link back to this plugin.
+- One edit, one commit: emdash fires `content:afterSave` twice for a single save
+  (a draft-save, then the publish). Before committing, the plugin compares the
+  substantive content (ignoring `version` / `updatedAt` / revision-id
+  bookkeeping) against the last backup and skips the write when nothing
+  meaningful changed, so a single edit no longer produces two commits. No-op
+  saves are skipped for the same reason.
 - On delete (`content:afterDelete`): removes the file so the working tree
   mirrors live content. The full pre-delete content stays recoverable from git
   history. When the file cannot be located by id (the delete event carries only
@@ -37,7 +44,7 @@ token** used to write it. With a dedicated backup token that renders as a
 confusing phantom account on GitHub. To avoid that, every commit is made under an
 explicit, neutral committer:
 
-- **Committer**: `EmDash CMS <emdash-cms@users.noreply.github.com>` by default.
+- **Committer**: `EmDash CMS Backup <emdash-cms@users.noreply.github.com>` by default.
   The no-reply email is intentional: it shows the name as plain text and does
   not link to any GitHub account. Override it with the `committerName` /
   `committerEmail` settings (or `GITHUB_BACKUP_COMMITTER_NAME` /
@@ -101,7 +108,7 @@ independently, first non-empty value wins, in this order:
 | repo           | `repo`           | `GITHUB_BACKUP_REPO` (1)         | (required)                             |
 | branch         | `branch`         | `GITHUB_BACKUP_BRANCH`           | `main`                                 |
 | folder         | `folder`         | `GITHUB_BACKUP_FOLDER`           | `emdash-backup`                        |
-| committerName  | `committerName`  | `GITHUB_BACKUP_COMMITTER_NAME`   | `EmDash CMS`                           |
+| committerName  | `committerName`  | `GITHUB_BACKUP_COMMITTER_NAME`   | `EmDash CMS Backup`                           |
 | committerEmail | `committerEmail` | `GITHUB_BACKUP_COMMITTER_EMAIL`  | `emdash-cms@users.noreply.github.com`  |
 
 (1) `GITHUB_BACKUP_REPO` is a single `owner/repo` string, for example

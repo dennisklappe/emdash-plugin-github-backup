@@ -109,17 +109,20 @@ async function resolveUserEmail(userId: string, users?: UsersLike): Promise<stri
 }
 
 /**
- * Build the commit message: the change, an "edited by {name} <{email}>" clause
- * when we know who the entry is attributed to, and a link back to this plugin.
- * A middle dot (` · `) is the separator, per the project's copy conventions.
+ * Build the commit message. The SUBJECT line is just the change
+ * ("Update collection/slug") so GitHub's commit list stays clean; the body
+ * (after a blank line, git convention) carries the editor and a link back to
+ * this plugin. GitHub renders the subject as the title and the rest as the
+ * description.
  */
 function commitMessage(verb: string, collection: string, slug: string, editor: Editor | null): string {
-	const parts = [`${verb} ${collection}/${slug}`];
+	const subject = `${verb} ${collection}/${slug}`;
+	const body: string[] = [];
 	if (editor) {
-		parts.push(editor.email ? `edited by ${editor.name} <${editor.email}>` : `edited by ${editor.name}`);
+		body.push(editor.email ? `Edited by ${editor.name} <${editor.email}>` : `Edited by ${editor.name}`);
 	}
-	parts.push(`via ${PLUGIN_URL}`);
-	return parts.join(" · ");
+	body.push(`via ${PLUGIN_URL}`);
+	return `${subject}\n\n${body.join("\n")}`;
 }
 
 /**
@@ -190,6 +193,46 @@ function toJson(snapshot: Snapshot): string {
 }
 
 /**
+ * System-managed bookkeeping fields on a saved record that change on every
+ * write. emdash fires `content:afterSave` TWICE for a single user save (a
+ * draft-save, then the publish), and only these fields differ between the two.
+ * Excluding them when comparing means one edit produces one commit, not two.
+ */
+const VOLATILE_CONTENT_KEYS = new Set([
+	"version",
+	"updatedAt",
+	"liveRevisionId",
+	"draftRevisionId",
+	"publishedAt",
+	"scheduledAt",
+]);
+
+/** A stable, key-sorted JSON of the content with volatile bookkeeping removed. */
+function substantiveContent(content: Record<string, unknown>): string {
+	const filtered: Record<string, unknown> = {};
+	for (const [key, value] of Object.entries(content)) {
+		if (!VOLATILE_CONTENT_KEYS.has(key)) filtered[key] = value;
+	}
+	return canonicalJson(filtered);
+}
+
+/** Deterministic JSON.stringify with object keys sorted at every depth. */
+function canonicalJson(value: unknown): string {
+	return JSON.stringify(sortDeep(value));
+}
+
+function sortDeep(value: unknown): unknown {
+	if (Array.isArray(value)) return value.map(sortDeep);
+	if (value && typeof value === "object") {
+		const obj = value as Record<string, unknown>;
+		const out: Record<string, unknown> = {};
+		for (const key of Object.keys(obj).sort()) out[key] = sortDeep(obj[key]);
+		return out;
+	}
+	return value;
+}
+
+/**
  * Write (or overwrite) the JSON snapshot for a saved entry.
  */
 export async function backupEntry(args: {
@@ -208,6 +251,23 @@ export async function backupEntry(args: {
 	const id = pickString(content.id) ?? null;
 	const slug = deriveSlug(content, id);
 	const path = entryPath(config, collection, slug);
+
+	// Dedup the draft-save + publish double-fire: if the substantive content
+	// (ignoring version/revision bookkeeping) is unchanged from the last backup,
+	// skip the commit so one edit yields one commit. Also stops no-op saves from
+	// adding noise. Best-effort: any read failure falls through to a normal write.
+	const existingText = await client.getTextFile(path).catch(() => null);
+	if (existingText) {
+		try {
+			const prev = JSON.parse(existingText) as { content?: Record<string, unknown> };
+			if (prev.content && substantiveContent(prev.content) === substantiveContent(content)) {
+				log.info("github-backup: entry unchanged, skipping duplicate save", { path });
+				return;
+			}
+		} catch {
+			// Unparseable previous backup: fall through and overwrite it.
+		}
+	}
 
 	const snapshot: Snapshot = {
 		collection,

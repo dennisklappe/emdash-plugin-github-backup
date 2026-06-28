@@ -23,7 +23,7 @@ export interface GithubBackupOptions {
 	folder?: string;
 	/**
 	 * Display name used as the commit committer (and as the author when the
-	 * editing CMS user cannot be resolved). Defaults to "EmDash CMS". Set this
+	 * editing CMS user cannot be resolved). Defaults to "EmDash CMS Backup". Set this
 	 * to avoid commits being attributed to the token owner's GitHub account.
 	 */
 	committerName?: string;
@@ -55,7 +55,7 @@ const DEFAULT_FOLDER = "emdash-backup";
 // Neutral committer identity. The no-reply email intentionally does not map to
 // any GitHub account, so commits show this name as plain text instead of
 // linking to the token owner's (confusing "github backup") account.
-const DEFAULT_COMMITTER_NAME = "EmDash CMS";
+const DEFAULT_COMMITTER_NAME = "EmDash CMS Backup";
 const DEFAULT_COMMITTER_EMAIL = "emdash-cms@users.noreply.github.com";
 
 function firstNonEmpty(...values: Array<string | null | undefined>): string {

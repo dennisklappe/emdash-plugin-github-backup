@@ -1,6 +1,6 @@
 {
   "name": "emdash-plugin-github-backup",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "Backs up emdash CMS content to a GitHub repository folder on every edit, giving file-based backups and a full git change history.",
   "type": "module",
   "main": "src/index.ts",
